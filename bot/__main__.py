@@ -438,6 +438,24 @@ async def stop_signals():
     else:
         await bot.stop()
 
+import threading
+import socket
+
+def start_dummy_tcp_server(port=8080):
+    def run():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('0.0.0.0', port))
+            s.listen()
+            print(f"[Dummy TCP Server] Listening on port {port} for health checks...")
+            while True:
+                conn, addr = s.accept()
+                conn.close()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+# Start dummy server (choose the port your TCP check uses)
+start_dummy_tcp_server(port=8080)
 
 bot_run = bot.loop.run_until_complete
 bot_run(main())
