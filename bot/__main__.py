@@ -1,10 +1,20 @@
 import asyncio
 import threading
 import socket
-from signal import signal, SIGINT
+from time import time, monotonic
 from datetime import datetime
-from base64 import b64decode
+from sys import executable
+from os import execl as osexecl
+from asyncio import create_subprocess_exec, gather
 from uuid import uuid4
+from base64 import b64decode
+
+from requests import get as rget
+from pytz import timezone
+from bs4 import BeautifulSoup
+from signal import signal, SIGINT
+from aiofiles.os import path as aiopath, remove as aioremove
+from aiofiles import open as aiopen
 
 from pyrogram import Client, idle
 from pyrogram.enums import ChatMemberStatus, ChatType
@@ -12,26 +22,19 @@ from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 from pyrogram.filters import command, private, regex
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from requests import get as rget
-from bs4 import BeautifulSoup
-from pytz import timezone
-from aiofiles.os import path as aiopath, remove as aioremove
-from aiofiles import open as aiopen
-from asyncio import create_subprocess_exec, gather
-
-# Import your bot's modules and utils here:
 from bot import (
     bot,
     user,
     bot_name,
     config_dict,
     user_data,
+    botStartTime,
     LOGGER,
     Interval,
+    DATABASE_URL,
     QbInterval,
     INCOMPLETE_TASK_NOTIFIER,
     scheduler,
-    DATABASE_URL,
 )
 from bot.version import get_version
 from .helper.ext_utils.fs_utils import start_cleanup, clean_all, exit_clean_up
@@ -88,7 +91,6 @@ from .modules import (
 )
 
 # ========== Dummy TCP Server (for Render health check) ==========
-
 def start_dummy_tcp_server(port=9999):
     def run():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -104,13 +106,11 @@ def start_dummy_tcp_server(port=9999):
 
 start_dummy_tcp_server(port=9999)
 
-
-# ========== Bot Handlers and Functions ==========
+# ========== Bot Command Handlers ==========
 
 async def stats(client, message):
     msg, btns = await get_stats(message)
     await sendMessage(message, msg, btns, photo="IMAGES")
-
 
 @new_task
 async def start(client, message):
@@ -118,23 +118,28 @@ async def start(client, message):
     buttons.ubutton(BotTheme("ST_BN1_NAME"), BotTheme("ST_BN1_URL"))
     buttons.ubutton(BotTheme("ST_BN2_NAME"), BotTheme("ST_BN2_URL"))
     reply_markup = buttons.build_menu(2)
+
     if len(message.command) > 1 and message.command[1] == "wzmlx":
         await deleteMessage(message)
-        return
     elif len(message.command) > 1 and config_dict.get("TOKEN_TIMEOUT"):
         userid = message.from_user.id
         encrypted_url = message.command[1]
         try:
-            input_token, pre_uid = (b64decode(encrypted_url.encode()).decode()).split("&&")
+            input_token, pre_uid = b64decode(encrypted_url.encode()).decode().split("&&")
         except Exception:
-            return await sendMessage(message, "Invalid token format!")
+            return await sendMessage(message, BotTheme("INVALID_TOKEN_FORMAT"))
+
         if int(pre_uid) != userid:
             return await sendMessage(message, BotTheme("OWN_TOKEN_GENERATE"))
         data = user_data.get(userid, {})
         if "token" not in data or data["token"] != input_token:
             return await sendMessage(message, BotTheme("USED_TOKEN"))
-        elif config_dict.get("LOGIN_PASS") is not None and data["token"] == config_dict["LOGIN_PASS"]:
+        elif (
+            config_dict.get("LOGIN_PASS") is not None
+            and data["token"] == config_dict["LOGIN_PASS"]
+        ):
             return await sendMessage(message, BotTheme("LOGGED_PASSWORD"))
+
         buttons.ibutton(BotTheme("ACTIVATE_BUTTON"), f"pass {input_token}", "header")
         reply_markup = buttons.build_menu(2)
         msg = BotTheme(
@@ -143,15 +148,16 @@ async def start(client, message):
             validity=get_readable_time(int(config_dict["TOKEN_TIMEOUT"])),
         )
         return await sendMessage(message, msg, reply_markup)
+
     elif await CustomFilters.authorized(client, message):
         start_string = BotTheme("ST_MSG", help_command=f"/{BotCommands.HelpCommand}")
         await sendMessage(message, start_string, reply_markup, photo="IMAGES")
-    elif config_dict.get("BOT_PM"):
+    elif config_dict.get("BOT_PM", False):
         await sendMessage(message, BotTheme("ST_BOTPM"), reply_markup, photo="IMAGES")
     else:
         await sendMessage(message, BotTheme("ST_UNAUTH"), reply_markup, photo="IMAGES")
-    await DbManger().update_pm_users(message.from_user.id)
 
+    await DbManger().update_pm_users(message.from_user.id)
 
 async def token_callback(_, query):
     user_id = query.from_user.id
@@ -168,7 +174,6 @@ async def token_callback(_, query):
     )
     await editReplyMarkup(query.message, InlineKeyboardMarkup(kb))
 
-
 async def login(_, message):
     if config_dict.get("LOGIN_PASS") is None:
         return
@@ -183,7 +188,6 @@ async def login(_, message):
         return await sendMessage(message, BotTheme("PASS_LOGGED"))
     else:
         await sendMessage(message, BotTheme("LOGIN_USED"))
-
 
 async def restart(client, message):
     restart_message = await sendMessage(message, BotTheme("RESTARTING"))
@@ -201,21 +205,15 @@ async def restart(client, message):
     await gather(proc1.wait(), proc2.wait())
     async with aiopen(".restartmsg", "w") as f:
         await f.write(f"{restart_message.chat.id}\n{restart_message.id}\n")
-    # Re-executes current Python executable with the bot module
-    import sys
-    from os import execl
-    execl(sys.executable, sys.executable, "-m", "bot")
-
+    osexecl(executable, executable, "-m", "bot")
 
 async def ping(_, message):
-    from time import monotonic
     start_time = monotonic()
     reply = await sendMessage(message, BotTheme("PING"))
     end_time = monotonic()
     await editMessage(
         reply, BotTheme("PING_VALUE", value=int((end_time - start_time) * 1000))
     )
-
 
 async def log(_, message):
     buttons = ButtonMaker()
@@ -224,7 +222,6 @@ async def log(_, message):
     )
     buttons.ibutton(BotTheme("WEB_PASTE_BT"), f"wzmlx {message.from_user.id} webpaste")
     await sendFile(message, "log.txt", buttons=buttons.build_menu(1))
-
 
 async def search_images():
     if not (query_list := config_dict.get("IMG_SEARCH")):
@@ -261,7 +258,6 @@ async def search_images():
     except Exception as e:
         LOGGER.error(f"An error occurred: {e}")
 
-
 async def bot_help(client, message):
     buttons = ButtonMaker()
     user_id = message.from_user.id
@@ -272,6 +268,24 @@ async def bot_help(client, message):
     buttons.ibutton(BotTheme("CLOSE_BT"), f"wzmlx {user_id} close")
     await sendMessage(message, BotTheme("HELP_HEADER"), buttons.build_menu(2))
 
-
 async def restart_notification():
-    now = datetime.now(timezone(config_dict.get("TIMEZONE", "
+    now = datetime.now(timezone(config_dict.get("TIMEZONE", "UTC")))
+    if await aiopath.isfile(".restartmsg"):
+        async with aiopen(".restartmsg") as f:
+            lines = await f.readlines()
+            chat_id, msg_id = map(int, lines)
+    else:
+        chat_id, msg_id = 0, 0
+
+    async def send_incompelete_task_message(cid, msg):
+        try:
+            if msg.startswith("⌬ <b><i>Restarted Successfully!</i></b>"):
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=msg,
+                    disable_web_page_preview=True,
+                )
+                await aioremove(".restartmsg")
+            else:
+                await bot.send
