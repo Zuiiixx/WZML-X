@@ -88,11 +88,11 @@ from .modules import (
     category_select,
 )
 
-# ---- Add this at the top of your main.py ----
 import threading
 import socket
+# ========== Dummy TCP Server (for Render health check) ==========
 
-def start_dummy_tcp_server(port=8080):
+def start_dummy_tcp_server(port=9999):
     def run():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('0.0.0.0', port))
@@ -105,8 +105,11 @@ def start_dummy_tcp_server(port=8080):
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
 
-# Start dummy TCP server (Render/Railway expects this)
-start_dummy_tcp_server(port=8080)
+# Start the dummy TCP server (on a safe port)
+start_dummy_tcp_server(port=9999)
+
+
+# ========== Pyrogram Bot ==========
 
 async def main():
     app = Client(...)
