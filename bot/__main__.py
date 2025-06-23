@@ -1,43 +1,42 @@
-from time import time, monotonic
-from datetime import datetime
-from sys import executable
-from os import execl as osexecl
-from asyncio import create_subprocess_exec, gather, run as asyrun
-from uuid import uuid4
-from base64 import b64decode
-from importlib import import_module, reload
-
-from requests import get as rget
-from pytz import timezone
-from bs4 import BeautifulSoup
+import asyncio
+import threading
+import socket
 from signal import signal, SIGINT
-from aiofiles.os import path as aiopath, remove as aioremove
-from aiofiles import open as aiopen
-from pyrogram import idle
+from datetime import datetime
+from base64 import b64decode
+from uuid import uuid4
+
+from pyrogram import Client, idle
 from pyrogram.enums import ChatMemberStatus, ChatType
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 from pyrogram.filters import command, private, regex
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+from requests import get as rget
+from bs4 import BeautifulSoup
+from pytz import timezone
+from aiofiles.os import path as aiopath, remove as aioremove
+from aiofiles import open as aiopen
+from asyncio import create_subprocess_exec, gather
+
+# Import your bot's modules and utils here:
 from bot import (
     bot,
     user,
     bot_name,
     config_dict,
     user_data,
-    botStartTime,
     LOGGER,
     Interval,
-    DATABASE_URL,
     QbInterval,
     INCOMPLETE_TASK_NOTIFIER,
     scheduler,
+    DATABASE_URL,
 )
 from bot.version import get_version
 from .helper.ext_utils.fs_utils import start_cleanup, clean_all, exit_clean_up
 from .helper.ext_utils.bot_utils import (
     get_readable_time,
-    cmd_exec,
     sync_to_async,
     new_task,
     set_commands,
@@ -88,8 +87,6 @@ from .modules import (
     category_select,
 )
 
-import threading
-import socket
 # ========== Dummy TCP Server (for Render health check) ==========
 
 def start_dummy_tcp_server(port=9999):
@@ -105,21 +102,10 @@ def start_dummy_tcp_server(port=9999):
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
 
-# Start the dummy TCP server (on a safe port)
 start_dummy_tcp_server(port=9999)
 
 
-# ========== Pyrogram Bot ==========
-
-async def main():
-    app = Client(...)
-    await app.start()
-    print("Bot started")
-    await idle()
-    await app.stop()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+# ========== Bot Handlers and Functions ==========
 
 async def stats(client, message):
     msg, btns = await get_stats(message)
@@ -134,19 +120,20 @@ async def start(client, message):
     reply_markup = buttons.build_menu(2)
     if len(message.command) > 1 and message.command[1] == "wzmlx":
         await deleteMessage(message)
-    elif len(message.command) > 1 and config_dict["TOKEN_TIMEOUT"]:
+        return
+    elif len(message.command) > 1 and config_dict.get("TOKEN_TIMEOUT"):
         userid = message.from_user.id
         encrypted_url = message.command[1]
-        input_token, pre_uid = (b64decode(encrypted_url.encode()).decode()).split("&&")
+        try:
+            input_token, pre_uid = (b64decode(encrypted_url.encode()).decode()).split("&&")
+        except Exception:
+            return await sendMessage(message, "Invalid token format!")
         if int(pre_uid) != userid:
             return await sendMessage(message, BotTheme("OWN_TOKEN_GENERATE"))
         data = user_data.get(userid, {})
         if "token" not in data or data["token"] != input_token:
             return await sendMessage(message, BotTheme("USED_TOKEN"))
-        elif (
-            config_dict["LOGIN_PASS"] is not None
-            and data["token"] == config_dict["LOGIN_PASS"]
-        ):
+        elif config_dict.get("LOGIN_PASS") is not None and data["token"] == config_dict["LOGIN_PASS"]:
             return await sendMessage(message, BotTheme("LOGGED_PASSWORD"))
         buttons.ibutton(BotTheme("ACTIVATE_BUTTON"), f"pass {input_token}", "header")
         reply_markup = buttons.build_menu(2)
@@ -159,7 +146,7 @@ async def start(client, message):
     elif await CustomFilters.authorized(client, message):
         start_string = BotTheme("ST_MSG", help_command=f"/{BotCommands.HelpCommand}")
         await sendMessage(message, start_string, reply_markup, photo="IMAGES")
-    elif config_dict["BOT_PM"]:
+    elif config_dict.get("BOT_PM"):
         await sendMessage(message, BotTheme("ST_BOTPM"), reply_markup, photo="IMAGES")
     else:
         await sendMessage(message, BotTheme("ST_UNAUTH"), reply_markup, photo="IMAGES")
@@ -183,7 +170,7 @@ async def token_callback(_, query):
 
 
 async def login(_, message):
-    if config_dict["LOGIN_PASS"] is None:
+    if config_dict.get("LOGIN_PASS") is None:
         return
     elif len(message.command) > 1:
         user_id = message.from_user.id
@@ -214,10 +201,14 @@ async def restart(client, message):
     await gather(proc1.wait(), proc2.wait())
     async with aiopen(".restartmsg", "w") as f:
         await f.write(f"{restart_message.chat.id}\n{restart_message.id}\n")
-    osexecl(executable, executable, "-m", "bot")
+    # Re-executes current Python executable with the bot module
+    import sys
+    from os import execl
+    execl(sys.executable, sys.executable, "-m", "bot")
 
 
 async def ping(_, message):
+    from time import monotonic
     start_time = monotonic()
     reply = await sendMessage(message, BotTheme("PING"))
     end_time = monotonic()
@@ -236,10 +227,10 @@ async def log(_, message):
 
 
 async def search_images():
-    if not (query_list := config_dict["IMG_SEARCH"]):
+    if not (query_list := config_dict.get("IMG_SEARCH")):
         return
     try:
-        total_pages = config_dict["IMG_PAGE"]
+        total_pages = config_dict.get("IMG_PAGE", 1)
         base_url = "https://www.wallpaperflare.com/search"
         for query in query_list:
             query = query.strip().replace(" ", "+")
@@ -283,196 +274,4 @@ async def bot_help(client, message):
 
 
 async def restart_notification():
-    now = datetime.now(timezone(config_dict["TIMEZONE"]))
-    if await aiopath.isfile(".restartmsg"):
-        with open(".restartmsg") as f:
-            chat_id, msg_id = map(int, f)
-    else:
-        chat_id, msg_id = 0, 0
-
-    async def send_incompelete_task_message(cid, msg):
-        try:
-            if msg.startswith("⌬ <b><i>Restarted Successfully!</i></b>"):
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    text=msg,
-                    disable_web_page_preview=True,
-                )
-                await aioremove(".restartmsg")
-            else:
-                await bot.send_message(
-                    chat_id=cid,
-                    text=msg,
-                    disable_web_page_preview=True,
-                    disable_notification=True,
-                )
-        except Exception as e:
-            LOGGER.error(e)
-
-    if INCOMPLETE_TASK_NOTIFIER and DATABASE_URL:
-        if notifier_dict := await DbManger().get_incomplete_tasks():
-            for cid, data in notifier_dict.items():
-                msg = (
-                    BotTheme(
-                        "RESTART_SUCCESS",
-                        time=now.strftime("%I:%M:%S %p"),
-                        date=now.strftime("%d/%m/%y"),
-                        timz=config_dict["TIMEZONE"],
-                        version=get_version(),
-                    )
-                    if cid == chat_id
-                    else BotTheme("RESTARTED")
-                )
-                msg += "\n\n⌬ <b><i>Incomplete Tasks!</i></b>"
-                for tag, links in data.items():
-                    msg += f"\n➲ <b>User:</b> {tag}\n┖ <b>Tasks:</b>"
-                    for index, link in enumerate(links, start=1):
-                        msg_link, source = next(iter(link.items()))
-                        msg += f" {index}. <a href='{source}'>S</a> ->  <a href='{msg_link}'>L</a> |"
-                        if len(msg.encode()) > 4000:
-                            await send_incompelete_task_message(cid, msg)
-                            msg = ""
-                if msg:
-                    await send_incompelete_task_message(cid, msg)
-
-    if await aiopath.isfile(".restartmsg"):
-        try:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=msg_id,
-                text=BotTheme(
-                    "RESTART_SUCCESS",
-                    time=now.strftime("%I:%M:%S %p"),
-                    date=now.strftime("%d/%m/%y"),
-                    timz=config_dict["TIMEZONE"],
-                    version=get_version(),
-                ),
-            )
-        except Exception as e:
-            LOGGER.error(e)
-        await aioremove(".restartmsg")
-
-
-async def log_check():
-    if config_dict["LEECH_LOG_ID"]:
-        for chat_id in config_dict["LEECH_LOG_ID"].split():
-            chat_id, *topic_id = chat_id.split(":")
-            try:
-                try:
-                    chat = await bot.get_chat(int(chat_id))
-                except Exception:
-                    LOGGER.error(
-                        f"Not Connected Chat ID : {chat_id}, Make sure the Bot is Added!"
-                    )
-                    continue
-                if chat.type == ChatType.CHANNEL:
-                    if not (
-                        await chat.get_member(bot.me.id)
-                    ).privileges.can_post_messages:
-                        LOGGER.error(
-                            f"Not Connected Chat ID : {chat_id}, Make the Bot is Admin in Channel to Connect!"
-                        )
-                        continue
-                    if (
-                        user
-                        and not (
-                            await chat.get_member(user.me.id)
-                        ).privileges.can_post_messages
-                    ):
-                        LOGGER.error(
-                            f"Not Connected Chat ID : {chat_id}, Make the User is Admin in Channel to Connect!"
-                        )
-                        continue
-                elif chat.type == ChatType.SUPERGROUP:
-                    if not (await chat.get_member(bot.me.id)).status in [
-                        ChatMemberStatus.OWNER,
-                        ChatMemberStatus.ADMINISTRATOR,
-                    ]:
-                        LOGGER.error(
-                            f"Not Connected Chat ID : {chat_id}, Make the Bot is Admin in Group to Connect!"
-                        )
-                        continue
-                    if user and not (await chat.get_member(user.me.id)).status in [
-                        ChatMemberStatus.OWNER,
-                        ChatMemberStatus.ADMINISTRATOR,
-                    ]:
-                        LOGGER.error(
-                            f"Not Connected Chat ID : {chat_id}, Make the User is Admin in Group to Connect!"
-                        )
-                        continue
-                LOGGER.info(f"Connected Chat ID : {chat_id}")
-            except Exception as e:
-                LOGGER.error(f"Not Connected Chat ID : {chat_id}, ERROR: {e}")
-
-
-async def main():
-    await gather(
-        start_cleanup(),
-        torrent_search.initiate_search_tools(),
-        restart_notification(),
-        search_images(),
-        set_commands(bot),
-        log_check(),
-    )
-    await sync_to_async(start_aria2_listener, wait=False)
-
-    bot.add_handler(
-        MessageHandler(start, filters=command(BotCommands.StartCommand) & private)
-    )
-    bot.add_handler(CallbackQueryHandler(token_callback, filters=regex(r"^pass")))
-    bot.add_handler(
-        MessageHandler(login, filters=command(BotCommands.LoginCommand) & private)
-    )
-    bot.add_handler(
-        MessageHandler(
-            log, filters=command(BotCommands.LogCommand) & CustomFilters.sudo
-        )
-    )
-    bot.add_handler(
-        MessageHandler(
-            restart, filters=command(BotCommands.RestartCommand) & CustomFilters.sudo
-        )
-    )
-    bot.add_handler(
-        MessageHandler(
-            ping,
-            filters=command(BotCommands.PingCommand)
-            & CustomFilters.authorized
-            & ~CustomFilters.blacklisted,
-        )
-    )
-    bot.add_handler(
-        MessageHandler(
-            bot_help,
-            filters=command(BotCommands.HelpCommand)
-            & CustomFilters.authorized
-            & ~CustomFilters.blacklisted,
-        )
-    )
-    bot.add_handler(
-        MessageHandler(
-            stats,
-            filters=command(BotCommands.StatsCommand)
-            & CustomFilters.authorized
-            & ~CustomFilters.blacklisted,
-        )
-    )
-    LOGGER.info(f"WZML-X Bot [@{bot_name}] Started!")
-    if user:
-        LOGGER.info(f"WZ's User [@{user.me.username}] Ready!")
-    signal(SIGINT, exit_clean_up)
-
-
-async def stop_signals():
-    if user:
-        await gather(bot.stop(), user.stop())
-    else:
-        await bot.stop()
-
-
-
-bot_run = bot.loop.run_until_complete
-bot_run(main())
-bot_run(idle())
-bot_run(stop_signals())
+    now = datetime.now(timezone(config_dict.get("TIMEZONE", "
