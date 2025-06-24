@@ -95,6 +95,8 @@ import logging
 def start_dummy_tcp_server(port=9999):
     def run():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Optional but good
+            s.settimeout(None)  # Prevent TimeoutError (wait forever)
             s.bind(('0.0.0.0', port))
             s.listen()
             logging.info(f"[Dummy TCP Server] Listening on port {port} for health checks...")
@@ -110,7 +112,6 @@ start_dummy_tcp_server(port=9999)
 
 # ========== Bot Command Handlers ==========
 # ... (your bot handlers and other logic continue below this)
-
 
 
 
