@@ -87,13 +87,17 @@ from .modules import (
     broadcast,
     category_select,
 )
-# ========== Dummy TCP Server (for Render health check) ==========
+import threading
+import socket
+import logging
+
+# ========== Dummy TCP Server (for Render/Koyeb health check) ==========
 def start_dummy_tcp_server(port=9999):
     def run():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('0.0.0.0', port))
             s.listen()
-            print(f"[Dummy TCP Server] Listening on port {port} for health checks...")
+            logging.info(f"[Dummy TCP Server] Listening on port {port} for health checks...")
             while True:
                 conn, addr = s.accept()
                 conn.close()
@@ -101,9 +105,11 @@ def start_dummy_tcp_server(port=9999):
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
 
+# Start the TCP server on port 9999
 start_dummy_tcp_server(port=9999)
 
 # ========== Bot Command Handlers ==========
+# ... (your bot handlers and other logic continue below this)
 
 
 
